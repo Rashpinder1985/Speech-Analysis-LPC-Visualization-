@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Analysis & LPC Visualization</title>
+    <style>
+        body { text-align: center; font-family: Arial, sans-serif; }
+        .container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+        .plot-container { text-align: center; }
+        canvas { border: 1px solid black; }
+        button { padding: 10px; margin: 10px; font-size: 16px; }
+        #subtitles, #frequencyDisplay, #vowelBox { font-size: 18px; font-weight: bold; margin-top: 10px; }
+        #frequencyDisplay { color: red; }
+        #vowelBox { color: blue; }
+    </style>
+</head>
+<body>
+    <h2>🎤 Real-time Speech Visualization & LPC Analysis</h2>
+    <button id="start">Start Recording</button>
+    <button id="stop" disabled>Stop & Save</button>
+
+    <div class="container">
+        <!-- Speech Signal -->
+        <div class="plot-container">
+            <h3>🔊 Speech Signal (Waveform)</h3>
+            <canvas id="waveformCanvas" width="400" height="200"></canvas>
+            <p>X-axis: Time (seconds) | Y-axis: Amplitude</p>
+        </div>
+        
+        <!-- Frequency Spectrum -->
+        <div class="plot-container">
+            <h3>📊 Frequency Spectrum (FFT)</h3>
+            <canvas id="frequencyCanvas" width="400" height="200"></canvas>
+            <p>X-axis: Frequency (Hz/kHz) | Y-axis: Amplitude (dB)</p>
+        </div>
+    </div>
+
+    <h3>⚡ Detected Dominant Frequency</h3>
+    <div id="frequencyDisplay">- Hz</div>
+
+    <div class="plot-container">
+        <h3>📈 Formant Frequencies (F1, F2, F3)</h3>
+        <canvas id="formantCanvas" width="600" height="200"></canvas>
+        <p>X-axis: Frequency (Hz) | Y-axis: Intensity</p>
+    </div>
+
+    <h3>📜 Subtitles</h3>
+    <div id="subtitles">Listening...</div>
+
+    <h3>🗣 Identified Vowels</h3>
+    <div id="vowelBox">-</div>
+
+    <script>
+        let audioContext, analyser, microphone, scriptProcessor, recorder, chunks = [];
+        let waveCanvas = document.getElementById("waveformCanvas");
+        let waveCtx = waveCanvas.getContext("2d");
+
+        let freqCanvas = document.getElementById("frequencyCanvas");
+        let freqCtx = freqCanvas.getContext("2d");
+
+        let formantCanvas = document.getElementById("formantCanvas");
+        let formantCtx = formantCanvas.getContext("2d");
+
+        let frequencyDisplay = document.getElementById("frequencyDisplay");
+
+        let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+        recognition.continuous = true;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event) => {
+            let transcript = event.results[event.results.length - 1][0].transcript;
+            document.getElementById("subtitles").innerText = transcript;
+            identifyVowels(transcript);
+        };
+
+        let vowelMap = { "a": "a", "e": "e", "i": "i", "o": "o", "u": "u" };
+
+        function identifyVowels(text) {
+            let vowels = text.match(/[aeiou]/gi) || [];
+            document.getElementById("vowelBox").innerText = vowels.map(v => vowelMap[v.toLowerCase()] || v).join(" ");
+        }
+
+        document.getElementById("start").onclick = async () => {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+
+            let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            microphone = audioContext.createMediaStreamSource(stream);
+            scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+            microphone.connect(analyser);
+            analyser.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+
+            let videoStream = new MediaStream([...waveCanvas.captureStream(30).getTracks(), ...freqCanvas.captureStream(30).getTracks(), ...formantCanvas.captureStream(30).getTracks(), ...stream.getTracks()]);
+            recorder = new MediaRecorder(videoStream);
+            recorder.ondataavailable = (event) => chunks.push(event.data);
+            recorder.onstop = () => {
+                let blob = new Blob(chunks, { type: "video/mp4" });
+                let url = URL.createObjectURL(blob);
+                let a = document.createElement("a");
+                a.href = url;
+                a.download = "speech_analysis.mp4";
+                a.click();
+            };
+
+            recorder.start();
+            recognition.start();
+
+            scriptProcessor.onaudioprocess = (event) => {
+                let inputBuffer = event.inputBuffer.getChannelData(0);
+                visualizeWaveform(inputBuffer);
+                visualizeFrequency();
+            };
+
+            document.getElementById("start").disabled = true;
+            document.getElementById("stop").disabled = false;
+        };
+
+        document.getElementById("stop").onclick = () => {
+            scriptProcessor.disconnect();
+            analyser.disconnect();
+            microphone.disconnect();
+            audioContext.close();
+            recognition.stop();
+            recorder.stop();
+            document.getElementById("start").disabled = false;
+            document.getElementById("stop").disabled = true;
+        };
+
+        function visualizeWaveform(data) {
+            waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+            waveCtx.beginPath();
+            waveCtx.strokeStyle = "blue";
+            waveCtx.lineWidth = 2;
+
+            for (let i = 0; i < data.length; i++) {
+                let x = (i / data.length) * waveCanvas.width;
+                let y = (1 - (data[i] + 1) / 2) * waveCanvas.height;
+                if (i === 0) waveCtx.moveTo(x, y);
+                else waveCtx.lineTo(x, y);
+            }
+
+            waveCtx.stroke();
+        }
+
+        function visualizeFrequency() {
+            let freqData = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(freqData);
+
+            freqCtx.clearRect(0, 0, freqCanvas.width, freqCanvas.height);
+            let maxFreq = audioContext.sampleRate / 2;
+            let maxIndex = freqData.indexOf(Math.max(...freqData));
+            let dominantFrequency = (maxIndex / freqData.length) * maxFreq;
+
+            let unit = dominantFrequency > 1000 ? "kHz" : "Hz";
+            let displayFreq = dominantFrequency > 1000 ? (dominantFrequency / 1000).toFixed(2) : dominantFrequency.toFixed(2);
+            frequencyDisplay.innerText = `Dominant Frequency: ${displayFreq} ${unit}`;
+
+            let barWidth = (freqCanvas.width / freqData.length) * 2.5;
+            let x = 0;
+
+            for (let i = 0; i < freqData.length; i++) {
+                let barHeight = freqData[i] / 2;
+                freqCtx.fillStyle = `rgb(${barHeight + 50}, 100, 200)`;
+                freqCtx.fillRect(x, freqCanvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+        }
+    </script>
+</body>
+</html>
