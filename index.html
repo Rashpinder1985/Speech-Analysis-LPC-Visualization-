@@ -9,7 +9,7 @@
         canvas { border: 1px solid black; margin: 10px; }
         .container { display: flex; justify-content: center; flex-wrap: wrap; }
         .plot-box { margin: 10px; }
-        #formantValues, #vowelDetected, #subtitles { font-size: 18px; font-weight: bold; margin-top: 10px; }
+        #formantValues, #subtitles { font-size: 18px; font-weight: bold; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -34,13 +34,6 @@
         </div>
     </div>
 
-    <div class="container">
-        <div class="plot-box">
-            <h3>Detected Vowel</h3>
-            <div id="vowelDetected">--</div>
-        </div>
-    </div>
-
     <p id="subtitles">[Live Subtitles]</p>
 
     <button onclick="startRecording()">🎙️ Start Recording</button>
@@ -49,8 +42,13 @@
     <script>
         let audioContext, analyser, microphone, canvasWave, canvasFFT;
         let recorder, audioChunks = [];
+        let isRecording = false;
+        let recognition;
 
         async function startRecording() {
+            if (isRecording) return;
+            isRecording = true;
+
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             analyser = audioContext.createAnalyser();
@@ -69,6 +67,9 @@
         }
 
         function stopRecording() {
+            if (!isRecording) return;
+            isRecording = false;
+
             recorder.stop();
             recorder.onstop = async () => {
                 let audioBlob = new Blob(audioChunks, { type: 'audio/mp4' });
@@ -78,17 +79,28 @@
                 a.download = 'speech.mp4';
                 a.click();
             };
+
+            if (microphone) {
+                microphone.disconnect();
+                microphone = null;
+            }
+            if (recognition) {
+                recognition.stop();
+                recognition = null;
+            }
         }
 
         function visualize() {
+            if (!isRecording) return;
+
             let bufferLength = analyser.frequencyBinCount;
             let dataArray = new Uint8Array(bufferLength);
 
             function draw() {
+                if (!isRecording) return;
                 requestAnimationFrame(draw);
                 analyser.getByteTimeDomainData(dataArray);
-                
-                // Plot Speech Signal
+
                 canvasWave.clearRect(0, 0, 400, 200);
                 canvasWave.beginPath();
                 for (let i = 0; i < bufferLength; i++) {
@@ -99,7 +111,6 @@
                 }
                 canvasWave.stroke();
 
-                // Plot Frequency Spectrum (FFT)
                 analyser.getByteFrequencyData(dataArray);
                 canvasFFT.clearRect(0, 0, 400, 200);
                 for (let i = 0; i < bufferLength; i++) {
@@ -107,10 +118,13 @@
                     canvasFFT.fillRect(i * 2, 200 - barHeight, 2, barHeight);
                 }
 
-                // Extract and Display Formants
-                let formants = extractFormants(dataArray);
-                displayFormants(formants);
-                detectVowel(formants);
+                let maxAmplitude = Math.max(...dataArray);
+                if (maxAmplitude > 130) {
+                    let formants = extractFormants(dataArray);
+                    displayFormants(formants);
+                } else {
+                    document.getElementById("formantValues").innerText = `F1: -- Hz, F2: -- Hz, F3: -- Hz`;
+                }
             }
             draw();
         }
@@ -119,7 +133,6 @@
             let maxIndex = data.indexOf(Math.max(...data));
             let peakFrequency = (maxIndex / data.length) * audioContext.sampleRate;
 
-            // Simulated LPC formant extraction
             let F1 = peakFrequency * 0.4;
             let F2 = peakFrequency * 0.6;
             let F3 = peakFrequency * 0.8;
@@ -131,23 +144,8 @@
             document.getElementById("formantValues").innerText = `F1: ${formants[0]} Hz, F2: ${formants[1]} Hz, F3: ${formants[2]} Hz`;
         }
 
-        function detectVowel(formants) {
-            let F1 = formants[0];
-            let F2 = formants[1];
-            let vowel = "--";
-
-            // Basic Vowel Classification based on F1 and F2 (approximate values)
-            if (F1 > 500 && F1 < 800 && F2 > 1000 && F2 < 1300) vowel = "A";
-            else if (F1 > 300 && F1 < 500 && F2 > 2000 && F2 < 2500) vowel = "I";
-            else if (F1 > 300 && F1 < 500 && F2 > 700 && F2 < 1200) vowel = "U";
-            else if (F1 > 500 && F1 < 700 && F2 > 1600 && F2 < 2300) vowel = "E";
-            else if (F1 > 400 && F1 < 600 && F2 > 900 && F2 < 1500) vowel = "O";
-
-            document.getElementById("vowelDetected").innerText = `Detected Vowel: ${vowel}`;
-        }
-
         function startSpeechRecognition() {
-            let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
             recognition.continuous = true;
             recognition.interimResults = true;
             recognition.onresult = event => {
